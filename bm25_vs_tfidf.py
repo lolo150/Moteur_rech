@@ -1,7 +1,6 @@
 import os
-from pprint import pprint
+import csv
 import math
-
 from bm25 import BM25
 
 
@@ -14,15 +13,15 @@ def try_import_sklearn():
         return None, None
 
 
-def simple_tfidf_cosine(corpus, query):
-    # simple TF-IDF with python and math (no sklearn). Returns cosine scores.
+def tfidf(corpus, query):
+    """TF-IDF avec normalisation classique (tf / de la longueur du doc)."""
     from collections import Counter
     import math
 
     tokenized = [doc.lower().split() for doc in corpus]
     q_tokens = query.lower().split()
 
-    # build df
+    # document frequency
     import collections
     df = collections.Counter()
     for doc in tokenized:
@@ -34,98 +33,122 @@ def simple_tfidf_cosine(corpus, query):
 
     def tfidf_vec(tokens):
         tf = Counter(tokens)
-        vec = {}
-        for t, f in tf.items():
-            vec[t] = f * idf.get(t, 0.0)
-        return vec
+        doc_len = len(tokens) # Nombre total de mots
+        
+        # CHANGEMENT ICI : tf normalisé = f / doc_len
+        return {t: (f / doc_len) * idf.get(t, 0.0) for t, f in tf.items()}
 
     qv = tfidf_vec(q_tokens)
 
     def dot(a, b):
-        s = 0.0
-        for k, v in a.items():
-            s += v * b.get(k, 0.0)
-        return s
-
-    def norm(a):
-        return math.sqrt(sum(v * v for v in a.values()))
+        return sum(v * b.get(k, 0.0) for k, v in a.items())
 
     scores = []
     for doc in tokenized:
         dv = tfidf_vec(doc)
-        denom = norm(dv) * norm(qv)
-        score = dot(dv, qv) / denom if denom > 0 else 0.0
-        scores.append(score)
+        # CHANGEMENT ICI : Simple produit scalaire, plus de division par les normes
+        scores.append(dot(dv, qv))
     return scores
 
 
-def run_example(corpus, queries):
-    print(f"Corpus size: {len(corpus)}")
-    bm25 = BM25(corpus)
 
+
+def make_saturation_corpus(term='apple'):
+    """Create a small corpus that demonstrates saturation and length effects.
+
+    Documents:
+      0: short, one occurrence
+      1: medium, few occurrences
+      2: very long, many occurrences (will 'saturate')
+      3: long but only one occurrence (tests length normalization)
+      4: medium with some occurrences spread among filler
+      5: unrelated doc (noise)
+    """
+    filler = ' '.join(['filler'] * 200)
+    corpus = []
+
+    # doc 0: short, 1 occurrence
+    corpus.append(f"{term}")
+
+    # doc 1: medium, repeated 5 times
+    corpus.append((' ' + term) * 5 + ' ' + 'mid ' * 20)
+
+    # doc 2: very long, repeated 80 times (lots of term occurrences)
+    corpus.append((term + ' ') * 80 + ' ' + filler)
+
+    # doc 3: very long but only one occurrence
+    corpus.append(filler + ' ' + term)
+
+    # doc 4: medium with some occurrences spread
+    corpus.append((' ' + term) * 10 + ' ' + ' '.join(['other'] * 50))
+
+    # doc 5: unrelated
+    corpus.append(' '.join(['other'] * 100))
+
+    return corpus
+
+
+
+# default inline corpus if data file missing
+corpus = [
+    "Deep learning. Deep learning",
+    "Le deep learning est une technologie intéressante. Dans ce grand article, nous allons explorer en détail le deep learning sous tous ses angles...",
+    "Apprendre le learning learning learning learning.",
+    "J'adore l'apprentissage profond et le deeep learning.",
+]
+
+def run_demo():
+    # try to load corpus from data file
+    
+    current_corpus = corpus
+
+    query = 'Deep learning'
+    query_tokens = query.lower().split() # ['deep', 'learning']
+
+    print(f"Corpus size: {len(current_corpus)}")
+
+    tokenized = [doc.lower().replace('.', '').split() for doc in current_corpus] # Nettoyage rapide de la ponctuation
+    for i, doc in enumerate(tokenized):
+        length = len(doc)
+        # Compte pour chaque token individuellement
+        counts = [f"{token}: {doc.count(token)}" for token in query_tokens]
+        counts_str = " | ".join(counts)
+        
+        # Affichage du résultat pour chaque document
+        print(f"  Doc {i}: len={length} -> {counts_str}")
+    # BM25
+    bm25 = BM25(current_corpus)
+    bm_scores = bm25.get_scores(query)
+
+    # TF-IDF (sklearn if available)
     TfidfVec, cos_sim = try_import_sklearn()
-    use_sklearn = TfidfVec is not None
-
-    if use_sklearn:
-        print("Using scikit-learn TF-IDF for comparison")
+    if TfidfVec is not None:
+        print('\nUsing scikit-learn TF-IDF (default parameters)')
         vect = TfidfVec()
-        X = vect.fit_transform(corpus)
+        X = vect.fit_transform(current_corpus)
+        qv = vect.transform([query])
+        tf_scores = cos_sim(qv, X).flatten().tolist()
+    else:
+        print('\nUsing TF-IDF from scratch (no sklearn)')
+        tf_scores = tfidf(current_corpus, query)
 
-    for q in queries:
-        print('\nQuery:', q)
-        bm_scores = bm25.get_scores(q)
-        # show top 5 docs for BM25
-        ranked_bm = sorted(enumerate(bm_scores), key=lambda x: x[1], reverse=True)[:5]
-        print('\nBM25 top 5:')
-        for i, s in ranked_bm:
-            print(f'  doc {i} score={s:.4f} text={corpus[i][:100]!r}')
+    # show rankings
+    ranked_bm = sorted(enumerate(bm_scores), key=lambda x: x[1], reverse=True)
+    ranked_tf = sorted(enumerate(tf_scores), key=lambda x: x[1], reverse=True)
 
-        if use_sklearn:
-            qv = vect.transform([q])
-            sims = cos_sim(qv, X).flatten()
-            ranked_tf = sorted(enumerate(sims), key=lambda x: x[1], reverse=True)[:5]
-        else:
-            sims = simple_tfidf_cosine(corpus, q)
-            ranked_tf = sorted(enumerate(sims), key=lambda x: x[1], reverse=True)[:5]
+    print('\nQuery:', query)
+    print('\nTF-IDF top ranks:')
+    for i, s in ranked_tf:
+        text = current_corpus[i] or ''
+        safe = text.replace("'", "\\'")[:120]
+        print(f"  doc {i} score={s:.4f} text='{safe}'")
 
-        print('\nTF-IDF top 5:')
-        for i, s in ranked_tf:
-            print(f'  doc {i} score={s:.4f} text={corpus[i][:100]!r}')
-
-
-def load_small_corpus_from_csv(path, text_col='product_name', n=200):
-    try:
-        import pandas as pd
-    except Exception:
-        return None
-    try:
-        df = pd.read_csv(path, usecols=[text_col])
-    except Exception:
-        return None
-    texts = df[text_col].fillna('').astype(str).tolist()
-    return texts[:n]
-
+    print('\nBM25 top ranks:')
+    for i, s in ranked_bm:
+        text = current_corpus[i] or ''
+        safe = text.replace("'", "\\'")[:120]
+        print(f"  doc {i} score={s:.4f} text='{safe}'")
+    
 
 if __name__ == '__main__':
-    # try to load sample CSV in repo
-    sample_csv = os.path.join(os.path.dirname(__file__), 'flipkart_com-ecommerce_sample.csv')
-    corpus = None
-    if os.path.exists(sample_csv):
-        corpus = load_small_corpus_from_csv(sample_csv, text_col='product_name', n=300)
-    if corpus is None:
-        # fallback tiny corpus
-        corpus = [
-            'red running shoes for men',
-            'women tennis shoes white',
-            'bluetooth wireless headphones',
-            'wireless mouse for laptop',
-            'men leather belt brown',
-            'water bottle stainless steel',
-            'cotton t-shirt men black',
-            'ladies handbag faux leather',
-            'kids toy car remote control',
-            'office chair ergonomic adjustable',
-        ]
-
-    queries = ['wireless headphones', 'running shoes', 'leather belt']
-    run_example(corpus, queries)
+    run_demo()
