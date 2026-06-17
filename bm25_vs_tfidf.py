@@ -2,7 +2,7 @@ import os
 import csv
 import math
 from bm25 import BM25
-
+from corpus import corpus
 
 def try_import_sklearn():
     try:
@@ -89,13 +89,9 @@ def make_saturation_corpus(term='apple'):
 
 
 
-# default inline corpus if data file missing
-corpus = [
-    "Deep learning. Deep learning",
-    "Le deep learning est une technologie intéressante. Dans ce grand article, nous allons explorer en détail le deep learning sous tous ses angles...",
-    "Apprendre le learning learning learning learning.",
-    "J'adore l'apprentissage profond et le deeep learning.",
-]
+
+
+
 
 def run_demo():
     # try to load corpus from data file
