@@ -2,7 +2,7 @@
 corpus = [
     "Deep learning. Deep learning",
     "Le deep learning est une technologie intéressante. Dans ce grand article, nous allons explorer en détail le deep learning sous tous ses angles...",
-    "Apprendre le learning learning learning learning.",
+    "Apprendre le learning learning learning learning learning learning learning learning learning learning learning learning learning learning learning learning.",
     "J'adore l'apprentissage profond et le deep learning.",
     "Dans cet article sur l'intelligence artificielle, nous aborderons le deep puis plus loin le learning."
 ]
