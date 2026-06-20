@@ -73,3 +73,60 @@ class NGramAutocomplete:
         ngram_matches = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
         results = exact_matches + [w for w in ngram_matches if w not in exact_matches]
         return results[:limit]
+    
+
+
+
+
+def distance_levenshtein(mot1, mot2):
+    """Calcule la distance de Levenshtein exacte entre deux mots (Programmation dynamique)."""
+    m, n = len(mot1), len(mot2)
+    # Création de la matrice de mémorisation
+    matrice = [[0] * (n + 1) for _ in range(m + 1)]
+    
+    for i in range(m + 1): matrice[i][0] = i
+    for j in range(n + 1): matrice[0][j] = j
+        
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if mot1[i-1] == mot2[j-1]:
+                cost = 0
+            else:
+                cost = 1
+            matrice[i][j] = min(
+                matrice[i-1][j] + 1,      # Suppression
+                matrice[i][j-1] + 1,      # Insertion
+                matrice[i-1][j-1] + cost  # Substitution
+            )
+    return matrice[m][n]
+
+class LevenshteinAutocomplete:
+    def __init__(self, max_distance=2):
+        self.lexique = set()
+        self.max_distance = max_distance
+
+    def fit(self, dataset):
+        """Construit le dictionnaire de mots uniques à partir du corpus."""
+        for doc in dataset:
+            words = re.findall(r"\w+", doc.lower())
+            self.lexique.update(words)
+
+    def suggest(self, current_word, limit=5):
+        """Propose des corrections basées sur la distance minimale."""
+        word = current_word.lower().strip()
+        if not word:
+            return []
+        
+        # Si le mot exact existe, pas besoin de corriger
+        if word in self.lexique:
+            return [word]
+            
+        suggestions = []
+        for candidat in self.lexique:
+            dist = distance_levenshtein(word, candidat)
+            if dist <= self.max_distance:
+                suggestions.append((candidat, dist))
+                
+        # Tri par distance la plus petite, puis par ordre alphabétique
+        suggestions.sort(key=lambda x: (x[1], x[0]))
+        return [sug[0] for sug in suggestions[:limit]]    

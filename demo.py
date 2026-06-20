@@ -15,7 +15,7 @@ from bm25 import BM25
 from n_gram_tokenizer import NGramTokenizer
 from tfidf import tfidf
 from evaluation import calcule_precision_at_k
-from autocomplete import NGramAutocomplete
+from autocomplete import LevenshteinAutocomplete
 
 # ============================================================
 # 1) Configuration Streamlit & Styles
@@ -46,12 +46,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- NAVIGATION DE LA BARRE LATÉRALE ---
-with st.sidebar:
-    st.header("📍 Navigation")
-    page = st.radio("Aller à :", ["🔍 Évaluation & Recherche", "📦 Analyse du Corpus"])
-    st.markdown("---")
-
 # ============================================================
 # 2) Fonctions Utilitaires & Graphiques
 # ============================================================
@@ -68,14 +62,11 @@ def load_csv_file(uploaded_file, default_path):
     return None
 
 def afficher_comparaison_courbes(k1_val, query_text, docs_collection):
-    """Génère le graphique de saturation basé sur la vraie TF max du corpus."""
-    # Nettoyage simple pour isoler le premier mot-clé de la requête
     words = re.findall(r"\w+", query_text.lower())
     if not words:
         return
-    target_word = words[0] # On zoome sur le premier terme significatif
+    target_word = words[0]
 
-    # Trouver la fréquence maximale de ce mot dans TOUT le corpus
     max_tf = 0
     for doc in docs_collection:
         tokens = re.findall(r"\w+", doc.lower())
@@ -83,14 +74,11 @@ def afficher_comparaison_courbes(k1_val, query_text, docs_collection):
         if tf_dans_doc > max_tf:
             max_tf = tf_dans_doc
 
-    # Sécurité : si le mot n'existe pas ou n'apparaît qu'une fois, on met une échelle minimale de 5
     limite_x = max(max_tf + 2, 5)
 
     st.write("---")
     st.markdown(f"### 📈 Analyse de la Saturation Réelle (Terme analysé : `{target_word}`)")
-    st.write(f"L'axe X est adapté dynamiquement. Fréquence maximale trouvée dans le corpus : **{max_tf} occurrences**.")
     
-    # L'abscisse va maintenant de 0 jusqu'à la limite réelle détectée
     tf_range = np.linspace(0, limite_x, 500)
     idf_simule = 2.5
     
@@ -101,7 +89,6 @@ def afficher_comparaison_courbes(k1_val, query_text, docs_collection):
     ax.plot(tf_range, score_tfidf, label="TF-IDF (Croissance linéaire)", color="red", linewidth=2)
     ax.plot(tf_range, score_bm25, label=f"BM25 (Saturation k1 = {k1_val:.1f})", color="blue", linewidth=2.5)
     
-    # Ligne verticale pointillée pour marquer le document le plus dense
     if max_tf > 0:
         ax.axvline(x=max_tf, color="purple", linestyle="--", alpha=0.7, label=f"TF Max Réelle ({max_tf})")
 
@@ -114,30 +101,22 @@ def afficher_comparaison_courbes(k1_val, query_text, docs_collection):
     
     st.pyplot(fig)
 
-
-
 def afficher_benchmark_performance(n_actuel, mode_actuel):
-    """Génère le graphique comparatif de performance pour les N-Grams."""
     st.write("---")
     st.markdown("### 🏆 Benchmark d'Efficacité : Unigrammes vs N-Grams")
-    st.info(f"Analyse de la précision théorique avec votre configuration actuelle : **N={n_actuel} ({mode_actuel})**")
 
-    # Scénarios
     labels = ['Cas 1: Faute ("deeep")', 'Cas 2: Phrase ("deep learning")']
+    std_scores = [0, 40]
     
-    # Données théoriques basées sur les capacités de l'algo
-    std_scores = [0, 40]  # BM25 Standard échoue sur la faute, bruité sur la phrase
-    
-    # Calcul dynamique de la performance N-Gram selon les réglages
     ngram_char = [0, 0]
     ngram_word = [0, 0]
     
     if mode_actuel == 'char':
-        ngram_char[0] = 100 if n_actuel >= 2 else 0 # Efficace sur typo si N >= 2
-        ngram_char[1] = 40 # Reste bruité sur les phrases
+        ngram_char[0] = 100 if n_actuel >= 2 else 0
+        ngram_char[1] = 40
     else:
-        ngram_word[0] = 0 # Le mode word ne corrige pas les fautes de lettres
-        ngram_word[1] = 100 if n_actuel >= 2 else 40 # Efficace sur phrase si N >= 2
+        ngram_word[0] = 0
+        ngram_word[1] = 100 if n_actuel >= 2 else 40
 
     x = np.arange(len(labels))
     width = 0.25
@@ -154,7 +133,6 @@ def afficher_benchmark_performance(n_actuel, mode_actuel):
     ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=3)
     ax.grid(axis='y', linestyle='--', alpha=0.5)
 
-    # Ajout des étiquettes de pourcentage sur les barres
     for i in range(len(labels)):
         ax.text(x[i]-width, std_scores[i]+2, f'{std_scores[i]}%', ha='center', fontweight='bold')
         ax.text(x[i], ngram_char[i]+2, f'{ngram_char[i]}%', ha='center', fontweight='bold')
@@ -162,24 +140,51 @@ def afficher_benchmark_performance(n_actuel, mode_actuel):
 
     st.pyplot(fig)
 
-# ==========================================
-# PAGE 1 : ÉVALUATION & RECHERCHE
-# ==========================================
-if page == "🔍 Évaluation & Recherche":
-    with st.sidebar:
+# --- NAVIGATION DE LA BARRE LATÉRALE ---
+with st.sidebar:
+    st.header("📍 Navigation")
+    page = st.radio("Aller à :", ["🔍 Évaluation & Recherche", "📦 Analyse du Corpus"])
+    st.markdown("---")
+    
+    if page == "🔍 Évaluation & Recherche":
         st.header("⚙️ Configuration")
         
+        # 1. TF-IDF
         show_tfidf = st.toggle("TF-IDF", value=True)
         
+        # 2. BM25 Standard
         show_bm25_std = st.toggle("BM25 Standard", value=True)
         with st.expander("🔧 Paramètres BM25 (k1, b)", expanded=False):
             k1 = st.slider("k1 (Saturation)", min_value=0.1, max_value=5.0, value=1.5, step=0.1)
             b_param = st.slider("b (Normalisation)", min_value=0.0, max_value=1.0, value=0.75, step=0.05)
         
-        show_bm25_ngram = st.toggle("BM25 + N-Gram", value=True)
+        # 3. BM25 + N-GRAM (Grisé si Levenshtein est actif)
+        show_bm25_ngram = st.toggle(
+            "BM25 + N-Gram", 
+            value=st.session_state.get("ngram_state", True),
+            disabled=st.session_state.get("lev_state", False)
+        )
         with st.expander("Paramètres N-Gram", expanded=False):
             n_val = st.slider("Valeur de N", 1, 4, 2)
             mode_val = st.radio("Mode", ["word", "char"])
+            
+        # 4. LEVENSHTEIN (Masqué si BM25 Std est éteint, Grisé si N-Gram est coché)
+        if show_bm25_std:
+            enable_levenshtein = st.toggle(
+                "🎯 Activer Suggestions Levenshtein", 
+                value=False,
+                disabled=show_bm25_ngram,
+                key="lev_toggle"
+            )
+            st.session_state["lev_state"] = enable_levenshtein
+            st.session_state["ngram_state"] = not enable_levenshtein
+            
+            with st.expander("Paramètres Levenshtein", expanded=False):
+                max_dist = st.slider("Distance d'édition max", 1, 3, 2)
+        else:
+            enable_levenshtein = False
+            st.session_state["lev_state"] = False
+            st.session_state["ngram_state"] = True
             
         st.markdown("---")
         st.subheader("📂 Source de Données")
@@ -194,44 +199,55 @@ if page == "🔍 Évaluation & Recherche":
                 all_cols = list(product_df.columns)
                 selected_text_cols = st.multiselect("Colonnes pour l'indexation", all_cols, default=all_cols[:2])
 
+# ==========================================
+# PAGE 1 : ÉVALUATION & RECHERCHE
+# ==========================================
+if page == "🔍 Évaluation & Recherche":
     st.title("🔬 Moteur de Recherche textuel Multi-modèle")
     
-    # Choix du corpus actif
     active_corpus = corpus
     if data_source == "Fichiers CSV (product.csv)" and product_df is not None and selected_text_cols:
         product_df['combined'] = product_df[selected_text_cols].fillna("").astype(str).agg(" ".join, axis=1)        
         active_corpus = product_df['combined'].tolist()
 
-    # Initialisation de l'autocomplétion
-    @st.cache_resource
-    def build_autocomplete_engine(dataset):
-        ac = NGramAutocomplete(n=3)
-        ac.fit(dataset)
-        return ac
+    # Initialisation du dictionnaire de mots uniques pour Levenshtein
+    if 'lev_autocomplete' not in st.session_state:
+        st.session_state.lev_autocomplete = LevenshteinAutocomplete(max_distance=2)
+        st.session_state.lev_autocomplete.fit(active_corpus)
 
-    autocomplete_engine = build_autocomplete_engine(active_corpus)
+    # État persistant pour la chaîne de recherche (évite les conflits d'écriture de clés)
+    if "current_query_val" not in st.session_state:
+        st.session_state.current_query_val = "deep learning"
 
-    if "search_query" not in st.session_state:
-        st.session_state.search_query = "deep learning"
+    # Zone de saisie utilisateur liée à l'état propre
+    query = st.text_input("Saisissez votre requête :", value=st.session_state.current_query_val)
 
-    # Composants de recherche et toggle d'autocomplétion
-    input_query = st.text_input("Saisissez votre requête :", value=st.session_state.search_query)
-    enable_autocomplete = st.toggle("🔮 Activer l'autocomplétion dynamique", value=True)
+    # Callback exécuté au moment du clic sur le bouton de suggestion
+    def appliquer_correction_lev(nouvelle_requete):
+        st.session_state.current_query_val = nouvelle_requete
 
-    query = input_query
-    if show_bm25_ngram and enable_autocomplete and input_query:
-        suggestions = autocomplete_engine.suggest(input_query, limit=5)
-        
-        if suggestions:
-            st.write("💡 *Suggestions (cliquez pour rechercher) :*")
-            cols_sug = st.columns(len(suggestions))
-            for i, sug in enumerate(suggestions):
-                with cols_sug[i]:
-                    if st.button(sug, key=f"sug_{sug}", use_container_width=True):
-                        st.session_state.search_query = sug
-                        st.rerun()
+    # --- PIPELINE DÉCOUPLÉ DE SUGGESTIONS VIA LEVENSHTEIN ---
+    if show_bm25_std and enable_levenshtein and query:
+        mots = query.split()
+        if mots:
+            dernier_mot = mots[-1]
+            dernier_mot_lower = dernier_mot.lower()
             
-            query = st.session_state.search_query
+            if dernier_mot_lower not in st.session_state.lev_autocomplete.lexique:
+                st.session_state.lev_autocomplete.max_distance = max_dist
+                suggestions = st.session_state.lev_autocomplete.suggest(dernier_mot, limit=3)
+                
+                if suggestions and suggestions[0] != dernier_mot_lower:
+                    st.warning(f"💡 Vouliez-vous dire : **{suggestions[0]}** ?")
+                    mots[-1] = suggestions[0]
+                    query_corrigee = " ".join(mots)
+                    
+                    # On passe par le callback sécurisé pour Streamlit
+                    st.button(
+                        f"Corriger par '{suggestions[0]}'", 
+                        on_click=appliquer_correction_lev, 
+                        args=(query_corrigee,)
+                    )
 
     def afficher_colonne_resultats(title, scores, q, column, docs_collection):
         with column:
@@ -256,7 +272,7 @@ if page == "🔍 Évaluation & Recherche":
                 </div>
                 """, unsafe_allow_html=True)
 
-    # Exécution des requêtes
+    # Exécution des algorithmes de scoring actifs
     if query:
         algos_actifs = sum([show_bm25_std, show_bm25_ngram, show_tfidf])
         
@@ -288,9 +304,8 @@ if page == "🔍 Évaluation & Recherche":
 
             tous_les_scores = scores_std + scores_ngram + scores_tfidf
             
-            # Gestion d'affichage si aucun score n'émerge
             if len(tous_les_scores) > 0 and all(score == 0 for score in tous_les_scores):
-                st.info("ℹ️ Aucun document pertinent trouvé pour cette requête (tous les scores sont égaux à 0).")
+                st.info("ℹ️ Aucun document pertinent trouvé pour cette requête.")
             else:
                 colonnes = st.columns(algos_actifs)
                 col_index = 0
@@ -306,25 +321,23 @@ if page == "🔍 Évaluation & Recherche":
                 if show_tfidf:
                     afficher_colonne_resultats("TF-IDF", scores_tfidf, query, colonnes[col_index], active_corpus)
 
-                # Affichage du graphique interactif de saturation
+                # Zone analytique dynamique de fin de page
                 if show_tfidf and show_bm25_std:
                     afficher_comparaison_courbes(k1, query, active_corpus)
 
                 if show_bm25_ngram:
-                # On passe les paramètres N et Mode configurés dans l'expander
                     afficher_benchmark_performance(n_val, mode_val)                    
     else:
         st.info("Entrez une requête pour démarrer la recherche.")
 
 # ==========================================
-# PAGE 2 : ANALYSE DU CORPUS (PAGE ENTIÈRE)
+# PAGE 2 : ANALYSE DU CORPUS
 # ==========================================
 elif page == "📦 Analyse du Corpus":
     st.title("📦 Analyse Globale du Corpus de Test")
-    st.write("Ce corpus synthétique sert de *benchmark* pour isoler les forces, faiblesses et cas limites de chaque algorithme.")
+    st.write("Ce corpus synthétique sert de *benchmark* pour isoler les forces et cas limites de chaque algorithme.")
     
     st.markdown("---")
-    
     c_doc0, c_doc1 = st.columns(2)
     with c_doc0:
         st.markdown("<p class='corpus-title'>📄 Doc 0 : Court et dense</p>", unsafe_allow_html=True)
@@ -341,7 +354,6 @@ elif page == "📦 Analyse du Corpus":
         """)
 
     st.markdown("---")
-    
     c_doc2, c_doc3 = st.columns(2)
     with c_doc2:
         st.markdown("<p class='corpus-title'>📄 Doc 2 : Répétition abusive (Keyword Spamming)</p>", unsafe_allow_html=True)
@@ -358,7 +370,7 @@ elif page == "📦 Analyse du Corpus":
         st.markdown("""
         **Comportement attendu :**
         * ❌ **Standards :** Donnent un score de 0 (pas de match exact).
-        * ✅ **BM25 + N-Gram :** Capte les sous-chaînes partielles.
+        * ✅ **Briques d'IHM :** Résolu élégamment soit par suggestions **Levenshtein**, soit par jetons **N-Grams**.
         """)
 
     st.markdown("---")
