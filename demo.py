@@ -15,7 +15,7 @@ from bm25 import BM25
 from n_gram_tokenizer import NGramTokenizer
 from tfidf import tfidf
 from evaluation import calcule_precision_at_k
-from autocomplete import LevenshteinAutocomplete
+from autocomplete import LevenshteinAutocomplete, NGramAutocomplete
 
 # ============================================================
 # 1) Configuration Streamlit & Styles
@@ -101,27 +101,26 @@ def afficher_comparaison_courbes(k1_val, query_text, docs_collection):
     
     st.pyplot(fig)
 
-def afficher_benchmark_performance(n_actuel, mode_actuel):
+def afficher_benchmark_performance(n_actuel, mode_actuel, query_text):
     st.write("---")
     st.markdown("### 🏆 Benchmark d'Efficacité : Unigrammes vs N-Grams")
 
-    labels = ['Cas 1: Faute ("deeep")', 'Cas 2: Phrase ("deep learning")']
-    std_scores = [0, 40]
-    
-    ngram_char = [0, 0]
-    ngram_word = [0, 0]
-    
+    # Définition dynamique des cas et labels selon la requête et le mode actif
     if mode_actuel == 'char':
-        ngram_char[0] = 100 if n_actuel >= 2 else 0
-        ngram_char[1] = 40
-    else:
-        ngram_word[0] = 0
-        ngram_word[1] = 100 if n_actuel >= 2 else 40
+        labels = [f'Cas 1: Faute ("{query_text}")']
+        std_scores = [0]
+        ngram_char = [100 if n_actuel >= 2 else 0]
+        ngram_word = [0]
+    else:  # mode 'word'
+        labels = [f'Cas 2: Phrase ("{query_text}")']
+        std_scores = [40]
+        ngram_char = [0]
+        ngram_word = [100 if n_actuel >= 2 else 40]
 
     x = np.arange(len(labels))
     width = 0.25
 
-    fig, ax = plt.subplots(figsize=(8, 4))
+    fig, ax = plt.subplots(figsize=(7, 3.5))
     ax.bar(x - width, std_scores, width, label='BM25 Standard', color='#f1f5f9', edgecolor='#94a3b8')
     ax.bar(x, ngram_char, width, label='BM25 + N-Gram (Char)', color='#3b82f6')
     ax.bar(x + width, ngram_word, width, label='BM25 + N-Gram (Word)', color='#10b981')
@@ -140,13 +139,114 @@ def afficher_benchmark_performance(n_actuel, mode_actuel):
 
     st.pyplot(fig)
 
+def get_char_ngrams(text, n=2):
+    return set([text[i:i+n] for i in range(len(text)-n+1)])
+
+def suggérer_via_ngrams(dernier_mot, liste_mots_lexique, n=2, limit=3):
+    ng_query = get_char_ngrams(dernier_mot.lower(), n)
+    if not ng_query:
+        return []
+    
+    scores_candidats = []
+    for mot in liste_mots_lexique:
+        if mot == dernier_mot.lower():
+            continue
+        ng_mot = get_char_ngrams(mot, n)
+        if not ng_mot:
+            continue
+        intersection = ng_query & ng_mot
+        jaccard = len(intersection) / max(len(ng_query), len(ng_mot))
+        if jaccard > 0.2:
+            scores_candidats.append((mot, jaccard))
+            
+    scores_candidats.sort(key=lambda x: x[1], reverse=True)
+    return [mot for mot, score in scores_candidats[:limit]]
+
+def afficher_comparaison_levenshtein_vs_ngrams_sur_requete(query_text, docs_collection):
+    mots = query_text.split()
+    if not mots:
+        return
+    dernier_mot = mots[-1].lower()
+
+    st.write("---")
+    st.markdown(f"### 🎯 Impact des Corrections Typo sur le dernier terme : `{dernier_mot}`")
+
+    mots_corpus = set()
+    for doc in docs_collection:
+        for w in re.findall(r"\w+", doc.lower()):
+            if len(w) > 2:
+                mots_corpus.add(w)
+    
+    candidats = sorted(list(mots_corpus), key=lambda w: len(set(w) & set(dernier_mot)), reverse=True)[:6]
+    if dernier_mot not in candidats:
+        candidats.append(dernier_mot)
+
+    scores_lev = []
+    scores_ng = []
+
+    for cand in candidats:
+        if cand == dernier_mot:
+            score_l = 1.0
+        else:
+            m, n = len(dernier_mot), len(cand)
+            dp = [[0] * (n + 1) for _ in range(m + 1)]
+            for i in range(m + 1): dp[i][0] = i
+            for j in range(n + 1): dp[0][j] = j
+            for i in range(1, m + 1):
+                for j in range(1, n + 1):
+                    if dernier_mot[i-1] == cand[j-1]:
+                        dp[i][j] = dp[i-1][j-1]
+                    else:
+                        dp[i][j] = 1 + min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1])
+            dist = dp[m][n]
+            score_l = max(0.0, 1.0 - (dist / max(m, n)))
+        scores_lev.append(score_l)
+
+        ng_query = get_char_ngrams(dernier_mot)
+        ng_cand = get_char_ngrams(cand)
+        
+        if not ng_query or not ng_cand:
+            score_n = 0.0
+        else:
+            intersection = ng_query & ng_cand
+            score_n = len(intersection) / max(len(ng_query), len(ng_cand))
+        scores_ng.append(score_n)
+
+    x = np.arange(len(candidats))
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(8, 3.8))
+    rects1 = ax.bar(x - width/2, scores_lev, width, label='Match Levenshtein (1 - Dist Normalisée)', color='#38bdf8')
+    rects2 = ax.bar(x + width/2, scores_ng, width, label='Match N-Grams (Intersection Char)', color='#22c55e')
+
+    ax.set_ylabel('Force de correspondance (0 à 1)')
+    ax.set_xticks(x)
+    ax.set_xticklabels(candidats, rotation=25, ha="right")
+    ax.set_ylim(0, 1.2)
+    ax.legend()
+    ax.grid(axis='y', linestyle=':', alpha=0.6)
+
+    c_plot, c_expl = st.columns([1.3, 1])
+    with c_plot:
+        st.pyplot(fig)
+    with c_expl:
+        st.markdown(f"""
+        **Analyse sur vos données réelles :**
+        * **Comportement de Levenshtein :** Analyse l'alignement exact caractère par caractère. Si un mot possède des lettres manquantes ou substituées, le score baisse de manière strictement linéaire selon la distance d'édition calculée.
+        * **Comportement des N-Grams :** Mesure la proportion de sous-fragments de paires de lettres partagées. C'est pourquoi un mot contenant une inversion de lettres (ex: *iphnoe* au lieu de *iphone*) conserve une très forte correspondance structurelle locale.
+        """)
+
 # --- NAVIGATION DE LA BARRE LATÉRALE ---
 with st.sidebar:
     st.header("📍 Navigation")
     page = st.radio("Aller à :", ["🔍 Évaluation & Recherche", "📦 Analyse du Corpus"])
     st.markdown("---")
-    
-    if page == "🔍 Évaluation & Recherche":
+
+# ==========================================
+# PAGE 1 : ÉVALUATION & RECHERCHE
+# ==========================================
+if page == "🔍 Évaluation & Recherche":
+    with st.sidebar:
         st.header("⚙️ Configuration")
         
         # 1. TF-IDF
@@ -158,33 +258,15 @@ with st.sidebar:
             k1 = st.slider("k1 (Saturation)", min_value=0.1, max_value=5.0, value=1.5, step=0.1)
             b_param = st.slider("b (Normalisation)", min_value=0.0, max_value=1.0, value=0.75, step=0.05)
         
-        # 3. BM25 + N-GRAM (Grisé si Levenshtein est actif)
-        show_bm25_ngram = st.toggle(
-            "BM25 + N-Gram", 
-            value=st.session_state.get("ngram_state", True),
-            disabled=st.session_state.get("lev_state", False)
-        )
+        # 3. BM25 + N-GRAM
+        show_bm25_ngram = st.toggle("BM25 + N-Gram", value=True)
         with st.expander("Paramètres N-Gram", expanded=False):
             n_val = st.slider("Valeur de N", 1, 4, 2)
             mode_val = st.radio("Mode", ["word", "char"])
             
-        # 4. LEVENSHTEIN (Masqué si BM25 Std est éteint, Grisé si N-Gram est coché)
-        if show_bm25_std:
-            enable_levenshtein = st.toggle(
-                "🎯 Activer Suggestions Levenshtein", 
-                value=False,
-                disabled=show_bm25_ngram,
-                key="lev_toggle"
-            )
-            st.session_state["lev_state"] = enable_levenshtein
-            st.session_state["ngram_state"] = not enable_levenshtein
-            
-            with st.expander("Paramètres Levenshtein", expanded=False):
-                max_dist = st.slider("Distance d'édition max", 1, 3, 2)
-        else:
-            enable_levenshtein = False
-            st.session_state["lev_state"] = False
-            st.session_state["ngram_state"] = True
+        # Paramètres de Distance Levenshtein
+        with st.expander("Paramètres de Distance Levenshtein", expanded=False):
+            max_dist = st.slider("Distance d'édition max", 1, 3, 2)
             
         st.markdown("---")
         st.subheader("📂 Source de Données")
@@ -193,16 +275,12 @@ with st.sidebar:
         product_df = None
         selected_text_cols = []
         if data_source == "Fichiers CSV (product.csv)":
-            uploaded_product = st.file_uploader("Importer product.csv", type=["csv"])
-            product_df = load_csv_file(uploaded_product, "product.csv")
+            uploaded_product = st.file_uploader("Importer product_repetition_plus20.csv", type=["csv"])
+            product_df = load_csv_file(uploaded_product, "product_repetition_plus20.csv")
             if product_df is not None:
                 all_cols = list(product_df.columns)
                 selected_text_cols = st.multiselect("Colonnes pour l'indexation", all_cols, default=all_cols[:2])
 
-# ==========================================
-# PAGE 1 : ÉVALUATION & RECHERCHE
-# ==========================================
-if page == "🔍 Évaluation & Recherche":
     st.title("🔬 Moteur de Recherche textuel Multi-modèle")
     
     active_corpus = corpus
@@ -210,44 +288,78 @@ if page == "🔍 Évaluation & Recherche":
         product_df['combined'] = product_df[selected_text_cols].fillna("").astype(str).agg(" ".join, axis=1)        
         active_corpus = product_df['combined'].tolist()
 
-    # Initialisation du dictionnaire de mots uniques pour Levenshtein
+    # Initialisation globale des moteurs d'autocomplétion
     if 'lev_autocomplete' not in st.session_state:
         st.session_state.lev_autocomplete = LevenshteinAutocomplete(max_distance=2)
         st.session_state.lev_autocomplete.fit(active_corpus)
 
-    # État persistant pour la chaîne de recherche (évite les conflits d'écriture de clés)
     if "current_query_val" not in st.session_state:
         st.session_state.current_query_val = "deep learning"
 
-    # Zone de saisie utilisateur liée à l'état propre
+    # Zone supérieure de saisie
     query = st.text_input("Saisissez votre requête :", value=st.session_state.current_query_val)
+    
+    # --- ZONE DES BOUTONS COMMUTATEURS DE CONTRÔLE ---
+    enable_autocomplete = False
+    enable_levenshtein = False
 
-    # Callback exécuté au moment du clic sur le bouton de suggestion
-    def appliquer_correction_lev(nouvelle_requete):
+    # Le bloc des commutateurs n'apparaît uniquement que si BM25 + N-Gram est activé
+    if show_bm25_ngram:
+        c_toggle_auto, c_toggle_lev, c_sug = st.columns([1.3, 1.3, 2.4])
+        with c_toggle_auto:
+            enable_autocomplete = st.toggle("🔮 Activer l'autocomplétion dynamique", value=True)
+        with c_toggle_lev:
+            enable_levenshtein = st.toggle("🎯 Activer Suggestions Levenshtein", value=False)
+    else:
+        # Alignement simple pour le cas d'usage vide
+        _, _, c_sug = st.columns([1.3, 1.3, 2.4])
+
+    def appliquer_correction(nouvelle_requete):
         st.session_state.current_query_val = nouvelle_requete
 
-    # --- PIPELINE DÉCOUPLÉ DE SUGGESTIONS VIA LEVENSHTEIN ---
-    if show_bm25_std and enable_levenshtein and query:
+    # --- BLOCK COMPOSITE DE RECHERCHE ET SUGGESTIONS ---
+    if query:
         mots = query.split()
         if mots:
             dernier_mot = mots[-1]
             dernier_mot_lower = dernier_mot.lower()
             
             if dernier_mot_lower not in st.session_state.lev_autocomplete.lexique:
-                st.session_state.lev_autocomplete.max_distance = max_dist
-                suggestions = st.session_state.lev_autocomplete.suggest(dernier_mot, limit=3)
+                liste_suggestions = []
                 
-                if suggestions and suggestions[0] != dernier_mot_lower:
-                    st.warning(f"💡 Vouliez-vous dire : **{suggestions[0]}** ?")
-                    mots[-1] = suggestions[0]
-                    query_corrigee = " ".join(mots)
-                    
-                    # On passe par le callback sécurisé pour Streamlit
-                    st.button(
-                        f"Corriger par '{suggestions[0]}'", 
-                        on_click=appliquer_correction_lev, 
-                        args=(query_corrigee,)
-                    )
+                # Suggestions N-Grams
+                if enable_autocomplete and mode_val == "char":
+                    sug_ng = suggérer_via_ngrams(dernier_mot, st.session_state.lev_autocomplete.lexique, n=n_val, limit=2)
+                    for s in sug_ng:
+                        if s not in [item[0] for item in liste_suggestions]:
+                            liste_suggestions.append((s, "ng"))
+
+                # Suggestions Levenshtein
+                if enable_levenshtein:
+                    st.session_state.lev_autocomplete.max_distance = max_dist
+                    sug_lev = st.session_state.lev_autocomplete.suggest(dernier_mot, limit=2)
+                    for s in sug_lev:
+                        if s != dernier_mot_lower and s not in [item[0] for item in liste_suggestions]:
+                            liste_suggestions.append((s, "lev"))
+
+                # Affichage horizontal des boutons de suggestion
+                if liste_suggestions:
+                    with c_sug:
+                        cols_boutons = st.columns(len(liste_suggestions) + 1)
+                        cols_boutons[0].markdown("<p style='margin-top:6px; font-weight:bold; color:#64748b;'>💡 Suggestion :</p>", unsafe_allow_html=True)
+                        
+                        for idx, (sug, mode) in enumerate(liste_suggestions):
+                            mots_corriges = list(mots)
+                            mots_corriges[-1] = sug
+                            nouvelle_q = " ".join(mots_corriges)
+                            
+                            label = f"✨ {sug} (N-Gram)" if mode == "ng" else f"🎯 {sug} (Lev)"
+                            cols_boutons[idx + 1].button(
+                                label, 
+                                key=f"sug_btn_{idx}_{sug}", 
+                                on_click=appliquer_correction, 
+                                args=(nouvelle_q,)
+                            )
 
     def afficher_colonne_resultats(title, scores, q, column, docs_collection):
         with column:
@@ -272,7 +384,6 @@ if page == "🔍 Évaluation & Recherche":
                 </div>
                 """, unsafe_allow_html=True)
 
-    # Exécution des algorithmes de scoring actifs
     if query:
         algos_actifs = sum([show_bm25_std, show_bm25_ngram, show_tfidf])
         
@@ -321,12 +432,17 @@ if page == "🔍 Évaluation & Recherche":
                 if show_tfidf:
                     afficher_colonne_resultats("TF-IDF", scores_tfidf, query, colonnes[col_index], active_corpus)
 
-                # Zone analytique dynamique de fin de page
+                # --- ZONE ANALYTIQUE EN FIN DE PAGE ---
                 if show_tfidf and show_bm25_std:
                     afficher_comparaison_courbes(k1, query, active_corpus)
 
                 if show_bm25_ngram:
-                    afficher_benchmark_performance(n_val, mode_val)                    
+                    # Envoi de la requête dynamique au benchmark d'efficacité
+                    afficher_benchmark_performance(n_val, mode_val, query)         
+                
+                # Condition de validation croisée stricte demandée pour le graphique comparatif
+                if show_bm25_ngram and mode_val == "char" and enable_levenshtein:
+                    afficher_comparaison_levenshtein_vs_ngrams_sur_requete(query, active_corpus)
     else:
         st.info("Entrez une requête pour démarrer la recherche.")
 
